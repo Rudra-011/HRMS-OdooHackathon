@@ -3,18 +3,15 @@ const Employee = require('../models/Employee');
 const { calculateSalaryComponents } = require('../services/salaryCalculator');
 const AppError = require('../utils/AppError');
 
-// @desc    Get salary info (Employee - own)
-// @route   GET /api/salary/my
-// @access  Private
 const getMySalary = async (req, res, next) => {
   try {
-    // Only admin can view salary tab as per wireframe
-    // But employee can see limited info
+    // Only admin/HR can view salary info
     if (req.user.role === 'employee') {
-      return next(new AppError('Salary information is only visible to Admin', 403));
+      return next(new AppError('Salary information is only visible to Admin/HR', 403));
     }
 
     const employeeId = req.user.employee._id || req.user.employee;
+
     const salary = await Salary.findOne({ employee: employeeId, isActive: true })
       .populate('employee', 'firstName lastName employeeCode');
 
@@ -34,14 +31,11 @@ const getMySalary = async (req, res, next) => {
   }
 };
 
-// @desc    Get employee salary (Admin)
-// @route   GET /api/salary/:employeeId
-// @access  Private (Admin)
 const getEmployeeSalary = async (req, res, next) => {
   try {
-    const salary = await Salary.findOne({ 
-      employee: req.params.employeeId, 
-      isActive: true 
+    const salary = await Salary.findOne({
+      employee: req.params.employeeId,
+      isActive: true
     }).populate('employee', 'firstName lastName employeeCode');
 
     if (!salary) {
@@ -60,9 +54,6 @@ const getEmployeeSalary = async (req, res, next) => {
   }
 };
 
-// @desc    Create/Update salary structure
-// @route   POST /api/salary/:employeeId
-// @access  Private (Admin)
 const upsertSalary = async (req, res, next) => {
   try {
     const { monthlyWage, workingDaysPerWeek, breakTimeHours, customRates } = req.body;
@@ -82,7 +73,6 @@ const upsertSalary = async (req, res, next) => {
     let salary = await Salary.findOne({ employee: req.params.employeeId, isActive: true });
 
     if (salary) {
-      // Update existing
       salary.monthlyWage = monthlyWage;
       salary.workingDaysPerWeek = workingDaysPerWeek || salary.workingDaysPerWeek;
       salary.breakTimeHours = breakTimeHours || salary.breakTimeHours;
@@ -92,7 +82,6 @@ const upsertSalary = async (req, res, next) => {
       salary.professionalTax = salaryData.professionalTax;
       await salary.save();
     } else {
-      // Create new
       salary = await Salary.create({
         employee: req.params.employeeId,
         company: companyId,
@@ -113,9 +102,6 @@ const upsertSalary = async (req, res, next) => {
   }
 };
 
-// @desc    Get all salaries (Admin overview)
-// @route   GET /api/salary
-// @access  Private (Admin)
 const getAllSalaries = async (req, res, next) => {
   try {
     const companyId = req.user.company._id || req.user.company;

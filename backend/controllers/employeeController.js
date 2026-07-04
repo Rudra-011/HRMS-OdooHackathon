@@ -1,17 +1,27 @@
+const path = require('path');
+const fs = require('fs').promises;
 const Employee = require('../models/Employee');
 const User = require('../models/User');
+const Company = require('../models/Company');
 const Salary = require('../models/Salary');
 const TimeOffAllocation = require('../models/TimeOffAllocation');
 const { generateLoginId, generateEmployeeCode } = require('../services/idGenerator');
 const { generatePassword } = require('../services/passwordGenerator');
 const { calculateSalaryComponents } = require('../services/salaryCalculator');
-const { sendWelcomeEmail } = require('../services/emailService');
+const { sendWelcomeEmail, sendVerificationEmail } = require('../services/emailService');
 const { defaultAllocations } = require('../config/config');
 const AppError = require('../utils/AppError');
 
-// @desc    Get all employees
-// @route   GET /api/employees
-// @access  Private (Admin/HR)
+const UPLOAD_BASE_PATH = path.join(__dirname, '../../upload');
+
+const ensureUploadDir = async (dirPath) => {
+  try {
+    await fs.mkdir(dirPath, { recursive: true });
+  } catch (err) {
+    if (err.code !== 'EEXIST') throw err;
+  }
+};
+
 const getAllEmployees = async (req, res, next) => {
   try {
     const { search, department, status, page = 1, limit = 20 } = req.query;
@@ -64,9 +74,6 @@ const getAllEmployees = async (req, res, next) => {
   }
 };
 
-// @desc    Get single employee
-// @route   GET /api/employees/:id
-// @access  Private
 const getEmployee = async (req, res, next) => {
   try {
     const employee = await Employee.findById(req.params.id)
@@ -78,7 +85,7 @@ const getEmployee = async (req, res, next) => {
       return next(new AppError('Employee not found', 404));
     }
 
-    // If employee role, can only see own profile details
+    // Employees can only view their own full profile
     if (req.user.role === 'employee') {
       const userEmployeeId = req.user.employee._id || req.user.employee;
       if (employee._id.toString() !== userEmployeeId.toString()) {
@@ -111,9 +118,7 @@ const getEmployee = async (req, res, next) => {
   }
 };
 
-// @desc    Create employee (Admin/HR creates employee)
-// @route   POST /api/employees
-// @access  Private (Admin/HR)
+// HR creates employees, Admin creates HR officers
 const createEmployee = async (req, res, next) => {
   try {
     const {
@@ -123,35 +128,47 @@ const createEmployee = async (req, res, next) => {
     } = req.body;
 
     const companyId = req.user.company._id || req.user.company;
-    const company = await require('../models/Company').findById(companyId);
 
+    // Role creation permission check
+    if (role === 'hr_officer' && req.user.role !== 'admin') {
+      return next(new AppError('Only admin can create HR officers', 403));
+    }
+
+    if (role === 'employee' && !['admin', 'hr_officer'].includes(req.user.role)) {
+      return next(new AppError('Only admin or HR can create employees', 403));
+    }
+
+    if (role === 'admin') {
+      return next(new AppError('Cannot create admin accounts', 403));
+    }
+
+    const company = await Company.findById(companyId);
     if (!company) {
       return next(new AppError('Company not found', 404));
     }
 
-    // Check if email already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return next(new AppError('Email already registered', 400));
     }
 
-    // Generate credentials
     const joiningYear = new Date(dateOfJoining).getFullYear();
     const loginId = await generateLoginId(company.code, firstName, lastName, joiningYear);
     const employeeCode = await generateEmployeeCode(company.code, joiningYear);
     const password = generatePassword();
 
-    // Create user
     const user = await User.create({
       loginId,
       email,
       password,
       role: role || 'employee',
-      isEmailVerified: true,
-      company: companyId
+      isEmailVerified: false,
+      registrationStatus: 'approved',
+      isActive: true,
+      company: companyId,
+      createdBy: req.user._id
     });
 
-    // Create employee
     const employee = await Employee.create({
       user: user._id,
       company: companyId,
@@ -162,14 +179,18 @@ const createEmployee = async (req, res, next) => {
       dateOfJoining: new Date(dateOfJoining),
       department: department || '',
       jobPosition: jobPosition || '',
-      location: location || ''
+      location: location || '',
+      isActive: true
     });
 
-    // Link employee to user
     user.employee = employee._id;
     await user.save();
 
-    // Create salary structure if wage provided
+    // Create upload directory for this employee
+    const employeeUploadDir = path.join(UPLOAD_BASE_PATH, `${firstName.toLowerCase()}_${lastName.toLowerCase()}_${employeeCode}`);
+    await ensureUploadDir(path.join(employeeUploadDir, 'avatars'));
+    await ensureUploadDir(path.join(employeeUploadDir, 'documents'));
+
     if (monthlyWage && monthlyWage > 0) {
       const salaryData = calculateSalaryComponents(monthlyWage);
       await Salary.create({
@@ -183,7 +204,7 @@ const createEmployee = async (req, res, next) => {
       });
     }
 
-    // Create default leave allocations
+    // Create time-off allocations
     const year = new Date().getFullYear();
     const allocations = Object.entries(defaultAllocations).map(([type, days]) => ({
       employee: employee._id,
@@ -198,18 +219,22 @@ const createEmployee = async (req, res, next) => {
     }));
     await TimeOffAllocation.insertMany(allocations);
 
-    // Send welcome email with credentials
-    await sendWelcomeEmail(email, loginId, password, `${firstName} ${lastName}`);
+    // Send welcome email with credentials and verification link
+    const verificationToken = user.createEmailVerificationToken();
+    await user.save();
+
+    const verificationUrl = `${process.env.CLIENT_URL}/verify-email/${verificationToken}`;
+    await sendWelcomeEmail(email, loginId, password, `${firstName} ${lastName}`, verificationUrl);
 
     res.status(201).json({
       success: true,
-      message: 'Employee created successfully. Login credentials sent to email.',
+      message: 'Employee created successfully. Login credentials and verification email sent.',
       data: {
         employee,
         credentials: {
           loginId,
           email,
-          temporaryPassword: password // Only shown once during creation
+          temporaryPassword: password
         }
       }
     });
@@ -218,37 +243,34 @@ const createEmployee = async (req, res, next) => {
   }
 };
 
-// @desc    Update employee
-// @route   PUT /api/employees/:id
-// @access  Private
 const updateEmployee = async (req, res, next) => {
   try {
     const employee = await Employee.findById(req.params.id);
-
     if (!employee) {
       return next(new AppError('Employee not found', 404));
     }
 
-    // Determine which fields can be updated based on role
     let allowedFields;
     if (['admin', 'hr_officer'].includes(req.user.role)) {
-      // Admin can update all fields
       allowedFields = [
         'firstName', 'lastName', 'phone', 'dateOfBirth', 'gender',
         'maritalStatus', 'nationality', 'personalEmail', 'residingAddress',
         'jobPosition', 'department', 'location', 'manager',
         'bankDetails', 'about', 'whatILove', 'interestsAndHobbies',
-        'skills', 'certifications', 'workStatus', 'avatar'
+        'skills', 'certifications', 'workStatus'
       ];
     } else {
-      // Employee can only update limited fields
+      // Employee can only edit their own limited fields
+      const userEmployeeId = req.user.employee._id || req.user.employee;
+      if (employee._id.toString() !== userEmployeeId.toString()) {
+        return next(new AppError('You can only edit your own profile', 403));
+      }
       allowedFields = [
-        'phone', 'residingAddress', 'personalEmail', 'avatar',
+        'phone', 'residingAddress', 'personalEmail',
         'about', 'whatILove', 'interestsAndHobbies', 'skills'
       ];
     }
 
-    // Filter body to only allowed fields
     const updates = {};
     allowedFields.forEach(field => {
       if (req.body[field] !== undefined) {
@@ -273,9 +295,6 @@ const updateEmployee = async (req, res, next) => {
   }
 };
 
-// @desc    Deactivate employee
-// @route   DELETE /api/employees/:id
-// @access  Private (Admin)
 const deactivateEmployee = async (req, res, next) => {
   try {
     const employee = await Employee.findById(req.params.id);
@@ -287,7 +306,6 @@ const deactivateEmployee = async (req, res, next) => {
     employee.workStatus = 'terminated';
     await employee.save();
 
-    // Deactivate user account
     await User.findByIdAndUpdate(employee.user, { isActive: false });
 
     res.status(200).json({
@@ -299,28 +317,89 @@ const deactivateEmployee = async (req, res, next) => {
   }
 };
 
-// @desc    Upload avatar
-// @route   POST /api/employees/:id/avatar
-// @access  Private
 const uploadAvatar = async (req, res, next) => {
   try {
     if (!req.file) {
       return next(new AppError('Please upload a file', 400));
     }
 
-    const employee = await Employee.findByIdAndUpdate(
-      req.params.id,
-      { avatar: `/uploads/avatars/${req.file.filename}` },
-      { new: true }
-    );
-
+    const employee = await Employee.findById(req.params.id);
     if (!employee) {
       return next(new AppError('Employee not found', 404));
     }
 
+    // Check permission - employee can only upload their own avatar
+    if (req.user.role === 'employee') {
+      const userEmployeeId = req.user.employee._id || req.user.employee;
+      if (employee._id.toString() !== userEmployeeId.toString()) {
+        return next(new AppError('You can only update your own avatar', 403));
+      }
+    }
+
+    // Move file to employee's folder
+    const folderName = `${employee.firstName.toLowerCase()}_${employee.lastName.toLowerCase()}_${employee.employeeCode}`;
+    const destDir = path.join(UPLOAD_BASE_PATH, folderName, 'avatars');
+    await ensureUploadDir(destDir);
+
+    const destPath = path.join(destDir, req.file.filename);
+    await fs.rename(req.file.path, destPath);
+
+    const avatarPath = `/upload/${folderName}/avatars/${req.file.filename}`;
+
+    // Delete old avatar if exists
+    if (employee.avatar) {
+      const oldPath = path.join(__dirname, '../..', employee.avatar);
+      try {
+        await fs.unlink(oldPath);
+      } catch (err) {
+        // Ignore if old file doesn't exist
+      }
+    }
+
+    employee.avatar = avatarPath;
+    await employee.save();
+
     res.status(200).json({
       success: true,
       data: { avatar: employee.avatar }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const uploadDocument = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return next(new AppError('Please upload a file', 400));
+    }
+
+    const employee = await Employee.findById(req.params.id);
+    if (!employee) {
+      return next(new AppError('Employee not found', 404));
+    }
+
+    // Move file to employee's folder
+    const folderName = `${employee.firstName.toLowerCase()}_${employee.lastName.toLowerCase()}_${employee.employeeCode}`;
+    const destDir = path.join(UPLOAD_BASE_PATH, folderName, 'documents');
+    await ensureUploadDir(destDir);
+
+    const destPath = path.join(destDir, req.file.filename);
+    await fs.rename(req.file.path, destPath);
+
+    const documentPath = `/upload/${folderName}/documents/${req.file.filename}`;
+
+    employee.documents.push({
+      name: req.body.documentName || req.file.originalname,
+      url: documentPath,
+      uploadedAt: new Date()
+    });
+    await employee.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Document uploaded successfully',
+      data: { documents: employee.documents }
     });
   } catch (error) {
     next(error);
@@ -333,5 +412,6 @@ module.exports = {
   createEmployee,
   updateEmployee,
   deactivateEmployee,
-  uploadAvatar
+  uploadAvatar,
+  uploadDocument
 };

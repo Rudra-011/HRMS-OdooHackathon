@@ -1,213 +1,195 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { useAuth } from '../../hooks/useAuth';
-import { HiEye, HiEyeOff, HiUpload } from 'react-icons/hi';
+import authService from '../../services/authService';
+import { HiEye, HiEyeOff, HiCheckCircle } from 'react-icons/hi';
 
 const SignUp = () => {
   const [formData, setFormData] = useState({
-    companyName: '',
-    name: '',
+    firstName: '',
+    lastName: '',
     email: '',
     phone: '',
     password: '',
     confirmPassword: ''
   });
   const [showPassword, setShowPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [errors, setErrors] = useState({});
-  const { signup } = useAuth();
+  const [message, setMessage] = useState(null);
   const navigate = useNavigate();
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
-    if (errors[e.target.name]) {
-      setErrors({ ...errors, [e.target.name]: '' });
-    }
-  };
-
-  const validate = () => {
-    const newErrors = {};
-    if (!formData.companyName.trim()) newErrors.companyName = 'Company name is required';
-    if (!formData.name.trim()) newErrors.name = 'Name is required';
-    if (!formData.email.trim()) newErrors.email = 'Email is required';
-    else if (!/^\S+@\S+\.\S+$/.test(formData.email)) newErrors.email = 'Invalid email format';
-    if (!formData.password) newErrors.password = 'Password is required';
-    else if (formData.password.length < 8) newErrors.password = 'Password must be at least 8 characters';
-    else if (!/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])/.test(formData.password)) {
-      newErrors.password = 'Password must contain uppercase, lowercase, number, and special character';
-    }
-    if (formData.password !== formData.confirmPassword) {
-      newErrors.confirmPassword = 'Passwords do not match';
-    }
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!validate()) return;
-    
+    if (formData.password !== formData.confirmPassword) {
+      return setMessage({ type: 'error', text: 'Passwords do not match!' });
+    }
     setLoading(true);
+    setMessage(null);
     try {
-      await signup(formData);
-      navigate('/employees');
+      const { firstName, lastName, email, phone, password, confirmPassword } = formData;
+      const response = await authService.signUp({ firstName, lastName, email, phone, password, confirmPassword });
+      setMessage({
+        type: 'success',
+        text: response.message || 'Registration submitted. Please verify your email and await HR approval.'
+      });
+      // Redirect to signin after 4 seconds
+      setTimeout(() => navigate('/signin'), 4000);
     } catch (error) {
-      if (error.response?.data?.errors) {
-        const apiErrors = {};
-        error.response.data.errors.forEach(err => {
-          apiErrors[err.field] = err.message;
-        });
-        setErrors(apiErrors);
-      }
+      setMessage({ type: 'error', text: error.response?.data?.message || 'Registration failed. Please try again.' });
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-blue-100 px-4 py-8">
-      <div className="w-full max-w-md">
-        {/* Logo */}
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-blue-100 px-4 py-10">
+      <div className="w-full max-w-lg bg-white rounded-2xl shadow-xl p-8">
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-primary-600 rounded-2xl shadow-lg mb-4">
-            <span className="text-white font-bold text-2xl">HR</span>
+          <div className="inline-flex items-center justify-center w-14 h-14 bg-primary-600 rounded-2xl shadow-lg mb-4">
+            <span className="text-white font-bold text-xl">HR</span>
           </div>
-          <h1 className="text-2xl font-bold text-gray-900">Create Account</h1>
-          <p className="text-gray-500 mt-1">Register your company on HRMS</p>
+          <h1 className="text-2xl font-bold text-gray-900">Employee Registration</h1>
+          <p className="text-gray-500 mt-1">Apply for your HRMS account</p>
         </div>
 
-        {/* Form Card */}
-        <div className="bg-white rounded-2xl shadow-xl p-8">
-          <form onSubmit={handleSubmit} className="space-y-4">
-            {/* Company Name */}
+        {message && (
+          <div className={`mb-6 p-4 rounded-lg text-sm font-medium flex items-start gap-2 ${
+            message.type === 'success'
+              ? 'bg-green-50 border border-green-200 text-green-700'
+              : 'bg-red-50 border border-red-200 text-red-700'
+          }`}>
+            {message.type === 'success' && <HiCheckCircle className="w-5 h-5 mt-0.5 flex-shrink-0" />}
             <div>
-              <label className="input-label">Company Name</label>
-              <div className="flex items-center space-x-2">
-                <input
-                  type="text"
-                  name="companyName"
-                  value={formData.companyName}
-                  onChange={handleChange}
-                  className={`input-field ${errors.companyName ? 'border-red-500' : ''}`}
-                  placeholder="Enter company name"
-                />
-                <button
-                  type="button"
-                  className="p-2.5 border border-gray-300 rounded-lg text-gray-500 hover:bg-gray-50"
-                  title="Upload Logo"
-                >
-                  <HiUpload className="w-5 h-5" />
-                </button>
-              </div>
-              {errors.companyName && <p className="text-red-500 text-xs mt-1">{errors.companyName}</p>}
+              <p className="font-semibold">{message.type === 'success' ? 'Registration Submitted!' : 'Error'}</p>
+              <p className="mt-0.5">{message.text}</p>
+              {message.type === 'success' && (
+                <p className="mt-1 text-xs text-green-600">
+                  Next steps: Check your email for a verification link. Your account will be active after HR approval.
+                </p>
+              )}
             </div>
+          </div>
+        )}
 
-            {/* Name */}
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="input-label">Full Name</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">First Name *</label>
               <input
                 type="text"
-                name="name"
-                value={formData.name}
+                name="firstName"
+                value={formData.firstName}
                 onChange={handleChange}
-                className={`input-field ${errors.name ? 'border-red-500' : ''}`}
-                placeholder="Enter your full name"
+                required
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-primary-500 transition"
+                placeholder="John"
               />
-              {errors.name && <p className="text-red-500 text-xs mt-1">{errors.name}</p>}
             </div>
-
-            {/* Email */}
             <div>
-              <label className="input-label">Email</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Last Name *</label>
               <input
-                type="email"
-                name="email"
-                value={formData.email}
+                type="text"
+                name="lastName"
+                value={formData.lastName}
                 onChange={handleChange}
-                className={`input-field ${errors.email ? 'border-red-500' : ''}`}
-                placeholder="Enter your email"
-              />
-              {errors.email && <p className="text-red-500 text-xs mt-1">{errors.email}</p>}
-            </div>
-
-            {/* Phone */}
-            <div>
-              <label className="input-label">Phone</label>
-              <input
-                type="tel"
-                name="phone"
-                value={formData.phone}
-                onChange={handleChange}
-                className="input-field"
-                placeholder="Enter phone number"
+                required
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-primary-500 transition"
+                placeholder="Doe"
               />
             </div>
+          </div>
 
-            {/* Password */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Work Email *</label>
+            <input
+              type="email"
+              name="email"
+              value={formData.email}
+              onChange={handleChange}
+              required
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-primary-500 transition"
+              placeholder="john.doe@company.com"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Phone (Optional)</label>
+            <input
+              type="tel"
+              name="phone"
+              value={formData.phone}
+              onChange={handleChange}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-primary-500 transition"
+              placeholder="+91 98765 43210"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="input-label">Password</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Password *</label>
               <div className="relative">
                 <input
                   type={showPassword ? 'text' : 'password'}
                   name="password"
                   value={formData.password}
                   onChange={handleChange}
-                  className={`input-field pr-10 ${errors.password ? 'border-red-500' : ''}`}
-                  placeholder="Create password"
+                  required
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-primary-500 transition pr-10"
+                  placeholder="Min 8 chars"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400"
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600"
                 >
-                  {showPassword ? <HiEyeOff className="w-5 h-5" /> : <HiEye className="w-5 h-5" />}
+                  {showPassword ? <HiEyeOff className="w-4 h-4" /> : <HiEye className="w-4 h-4" />}
                 </button>
               </div>
-              {errors.password && <p className="text-red-500 text-xs mt-1">{errors.password}</p>}
             </div>
-
-            {/* Confirm Password */}
             <div>
-              <label className="input-label">Confirm Password</label>
-              <div className="relative">
-                <input
-                  type={showConfirmPassword ? 'text' : 'password'}
-                  name="confirmPassword"
-                  value={formData.confirmPassword}
-                  onChange={handleChange}
-                  className={`input-field pr-10 ${errors.confirmPassword ? 'border-red-500' : ''}`}
-                  placeholder="Confirm password"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400"
-                >
-                  {showConfirmPassword ? <HiEyeOff className="w-5 h-5" /> : <HiEye className="w-5 h-5" />}
-                </button>
-              </div>
-              {errors.confirmPassword && <p className="text-red-500 text-xs mt-1">{errors.confirmPassword}</p>}
+              <label className="block text-sm font-medium text-gray-700 mb-1">Confirm Password *</label>
+              <input
+                type={showPassword ? 'text' : 'password'}
+                name="confirmPassword"
+                value={formData.confirmPassword}
+                onChange={handleChange}
+                required
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-primary-500 transition"
+                placeholder="Repeat password"
+              />
             </div>
+          </div>
 
-            {/* Submit */}
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full btn-primary py-3 text-base mt-6"
-            >
-              {loading ? 'Creating Account...' : 'Sign Up'}
-            </button>
-          </form>
-
-          {/* Sign In Link */}
-          <p className="text-center mt-6 text-sm text-gray-600">
-            Already have an account?{' '}
-            <Link to="/signin" className="text-primary-600 font-medium hover:text-primary-700">
-              Sign In
-            </Link>
+          <p className="text-xs text-gray-500">
+            Password must contain uppercase, lowercase, number, and special character (@$!%*?&).
           </p>
-        </div>
+
+          <button
+            type="submit"
+            disabled={loading || message?.type === 'success'}
+            className="w-full bg-primary-600 text-white rounded-lg py-3 mt-2 font-medium hover:bg-primary-700 disabled:opacity-70 transition"
+          >
+            {loading ? (
+              <span className="flex items-center justify-center">
+                <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+                Submitting...
+              </span>
+            ) : message?.type === 'success' ? 'Registration Submitted ✓' : 'Register as Employee'}
+          </button>
+        </form>
+
+        <p className="text-center mt-6 text-sm text-gray-600">
+          Already have an account?{' '}
+          <Link to="/signin" className="text-primary-600 font-medium hover:text-primary-700">
+            Sign In
+          </Link>
+        </p>
       </div>
     </div>
   );

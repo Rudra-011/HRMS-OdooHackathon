@@ -4,14 +4,14 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
-const passport = require('passport');
 const path = require('path');
-require('dotenv').config();
+// Load .env from the project root (one level above backend/)
+require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
 const connectDB = require('./config/db');
 const errorHandler = require('./middleware/errorHandler');
+const { seedAdmin } = require('./services/adminSeeder');
 
-// Route imports
 const authRoutes = require('./routes/authRoutes');
 const employeeRoutes = require('./routes/employeeRoutes');
 const attendanceRoutes = require('./routes/attendanceRoutes');
@@ -20,10 +20,13 @@ const salaryRoutes = require('./routes/salaryRoutes');
 
 const app = express();
 
-// Connect to database
-connectDB();
+const startServer = async () => {
+  await connectDB();
+  await seedAdmin();
+};
 
-// Security middleware
+startServer();
+
 app.use(helmet());
 app.use(cors({
   origin: process.env.CLIENT_URL,
@@ -32,47 +35,36 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 15 * 60 * 1000,
   max: 100,
   message: 'Too many requests from this IP, please try again later.'
 });
 app.use('/api', limiter);
 
-// Body parsing
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// Logging
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 }
 
-// Passport
-require('./config/passport')(passport);
-app.use(passport.initialize());
+// Serve uploaded files from the root upload folder
+app.use('/upload', express.static(path.join(__dirname, '../upload')));
 
-// Static files
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-
-// Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/employees', employeeRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/timeoff', timeoffRoutes);
 app.use('/api/salary', salaryRoutes);
 
-// Health check
 app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'OK', message: 'HRMS API is running' });
 });
 
-// Error handling
 app.use(errorHandler);
 
-// 404 handler
 app.use('*', (req, res) => {
   res.status(404).json({ success: false, message: 'Route not found' });
 });

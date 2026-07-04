@@ -1,68 +1,47 @@
+const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Company = require('../models/Company');
 const Employee = require('../models/Employee');
 const TimeOffAllocation = require('../models/TimeOffAllocation');
 const { generateAccessToken, generateRefreshToken } = require('../utils/helpers');
 const { generateLoginId, generateEmployeeCode } = require('../services/idGenerator');
-const { generatePassword } = require('../services/passwordGenerator');
-const { sendWelcomeEmail } = require('../services/emailService');
-const { calculateSalaryComponents } = require('../services/salaryCalculator');
-const Salary = require('../models/Salary');
+const { sendVerificationEmail, sendRegistrationPendingEmail, sendRegistrationStatusEmail } = require('../services/emailService');
 const AppError = require('../utils/AppError');
-const jwt = require('jsonwebtoken');
 const { defaultAllocations } = require('../config/config');
 
-// @desc    Register company admin (Sign Up)
-// @route   POST /api/auth/signup
-// @access  Public
+// Employee self-registration
 const signUp = async (req, res, next) => {
   try {
-    const { companyName, name, email, phone, password } = req.body;
+    const { firstName, lastName, email, phone, password } = req.body;
 
-    // Check if user already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return next(new AppError('Email already registered', 400));
     }
 
-    // Check if company already exists
-    const existingCompany = await Company.findOne({ name: companyName });
-    if (existingCompany) {
-      return next(new AppError('Company already registered', 400));
+    // Find the company (single company system)
+    const company = await Company.findOne();
+    if (!company) {
+      return next(new AppError('System not configured. Please contact administrator.', 500));
     }
 
-    // Generate company code
-    const companyCode = companyName.replace(/[^a-zA-Z]/g, '').substring(0, 4).toUpperCase();
-
-    // Create company
-    const company = await Company.create({
-      name: companyName,
-      code: companyCode,
-      email,
-      phone
-    });
-
-    // Split name into first and last
-    const nameParts = name.trim().split(' ');
-    const firstName = nameParts[0];
-    const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : nameParts[0];
-
-    // Generate login ID
     const currentYear = new Date().getFullYear();
-    const loginId = await generateLoginId(companyCode, firstName, lastName, currentYear);
-    const employeeCode = await generateEmployeeCode(companyCode, currentYear);
+    const loginId = await generateLoginId(company.code, firstName, lastName, currentYear);
+    const employeeCode = await generateEmployeeCode(company.code, currentYear);
 
-    // Create user (admin role for first user)
+    // Create user with pending status
     const user = await User.create({
       loginId,
       email,
       password,
-      role: 'admin',
-      isEmailVerified: true, // For now, skip email verification
+      role: 'employee',
+      isEmailVerified: false,
+      registrationStatus: 'pending',
       company: company._id
     });
 
-    // Create employee profile
+    // Create employee record
     const employee = await Employee.create({
       user: user._id,
       company: company._id,
@@ -71,65 +50,36 @@ const signUp = async (req, res, next) => {
       lastName,
       phone,
       dateOfJoining: new Date(),
-      jobPosition: 'Admin',
-      department: 'Management'
+      isActive: false // Will be activated upon approval
     });
 
-    // Link employee to user
     user.employee = employee._id;
+
+    // Generate email verification token
+    const verificationToken = user.createEmailVerificationToken();
     await user.save();
 
-    // Update company creator
-    company.createdBy = user._id;
-    await company.save();
+    // Send verification email to the employee
+    const verificationUrl = `${process.env.CLIENT_URL}/verify-email/${verificationToken}`;
+    await sendVerificationEmail(email, `${firstName} ${lastName}`, verificationUrl);
 
-    // Create default leave allocations
-    const year = new Date().getFullYear();
-    const allocations = Object.entries(defaultAllocations).map(([type, days]) => ({
-      employee: employee._id,
+    // Notify HR about pending registration
+    const hrUsers = await User.find({
+      role: { $in: ['admin', 'hr_officer'] },
       company: company._id,
-      leaveType: type,
-      totalAllocated: days,
-      used: 0,
-      remaining: days,
-      validityStart: new Date(year, 0, 1),
-      validityEnd: new Date(year, 11, 31),
-      year
-    }));
-    await TimeOffAllocation.insertMany(allocations);
+      isActive: true
+    });
 
-    // Generate tokens
-    const accessToken = generateAccessToken(user);
-    const refreshToken = generateRefreshToken(user);
-
-    // Save refresh token
-    user.refreshToken = refreshToken;
-    user.lastLogin = new Date();
-    await user.save();
+    for (const hr of hrUsers) {
+      await sendRegistrationPendingEmail(hr.email, `${firstName} ${lastName}`, email);
+    }
 
     res.status(201).json({
       success: true,
-      message: 'Registration successful',
+      message: 'Registration submitted. Please check your email to verify your account. Your registration is pending HR approval.',
       data: {
-        user: {
-          id: user._id,
-          loginId: user.loginId,
-          email: user.email,
-          role: user.role,
-          employee: {
-            id: employee._id,
-            firstName: employee.firstName,
-            lastName: employee.lastName,
-            fullName: employee.fullName
-          }
-        },
-        company: {
-          id: company._id,
-          name: company.name,
-          code: company.code
-        },
-        accessToken,
-        refreshToken
+        email: user.email,
+        registrationStatus: user.registrationStatus
       }
     });
   } catch (error) {
@@ -137,14 +87,137 @@ const signUp = async (req, res, next) => {
   }
 };
 
-// @desc    Sign In
-// @route   POST /api/auth/signin
-// @access  Public
+// Verify email
+const verifyEmail = async (req, res, next) => {
+  try {
+    const { token } = req.params;
+
+    const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+
+    const user = await User.findOne({
+      emailVerificationToken: hashedToken,
+      emailVerificationExpires: { $gt: Date.now() }
+    });
+
+    if (!user) {
+      return next(new AppError('Invalid or expired verification token', 400));
+    }
+
+    user.isEmailVerified = true;
+    user.emailVerificationToken = undefined;
+    user.emailVerificationExpires = undefined;
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Email verified successfully. Please wait for HR approval to login.'
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Get pending registrations (for HR/Admin)
+const getPendingRegistrations = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id || req.user.company;
+
+    const pendingUsers = await User.find({
+      company: companyId,
+      registrationStatus: 'pending',
+      role: 'employee'
+    })
+      .select('-password -refreshToken')
+      .populate('employee', 'firstName lastName phone employeeCode')
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      data: { registrations: pendingUsers }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Approve or reject registration (for HR/Admin)
+const updateRegistrationStatus = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { status, rejectionReason } = req.body;
+
+    if (!['approved', 'rejected'].includes(status)) {
+      return next(new AppError('Status must be approved or rejected', 400));
+    }
+
+    const user = await User.findById(id).populate('employee');
+    if (!user) {
+      return next(new AppError('User not found', 404));
+    }
+
+    if (user.registrationStatus !== 'pending') {
+      return next(new AppError('This registration has already been processed', 400));
+    }
+
+    user.registrationStatus = status;
+
+    if (status === 'approved') {
+      user.isActive = true;
+      if (user.employee) {
+        await Employee.findByIdAndUpdate(user.employee._id, { isActive: true });
+      }
+
+      // Create time-off allocations
+      const year = new Date().getFullYear();
+      const companyId = user.company;
+      const existingAllocations = await TimeOffAllocation.findOne({
+        employee: user.employee._id,
+        year
+      });
+
+      if (!existingAllocations) {
+        const allocations = Object.entries(defaultAllocations).map(([type, days]) => ({
+          employee: user.employee._id,
+          company: companyId,
+          leaveType: type,
+          totalAllocated: days,
+          used: 0,
+          remaining: days,
+          validityStart: new Date(year, 0, 1),
+          validityEnd: new Date(year, 11, 31),
+          year
+        }));
+        await TimeOffAllocation.insertMany(allocations);
+      }
+    } else {
+      user.registrationRejectedReason = rejectionReason || '';
+      user.isActive = false;
+      if (user.employee) {
+        await Employee.findByIdAndUpdate(user.employee._id, { isActive: false });
+      }
+    }
+
+    await user.save();
+
+    // Notify employee about registration status
+    const employeeName = user.employee ? `${user.employee.firstName} ${user.employee.lastName}` : 'User';
+    await sendRegistrationStatusEmail(user.email, employeeName, status, rejectionReason);
+
+    res.status(200).json({
+      success: true,
+      message: `Registration ${status} successfully`,
+      data: { user: { id: user._id, registrationStatus: user.registrationStatus } }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Sign In
 const signIn = async (req, res, next) => {
   try {
     const { loginId, password } = req.body;
 
-    // Find user by loginId or email
     const user = await User.findOne({
       $or: [
         { loginId: loginId.toUpperCase() },
@@ -160,34 +233,42 @@ const signIn = async (req, res, next) => {
       return next(new AppError('Your account has been deactivated. Contact your HR.', 401));
     }
 
-    // Check password
+    if (!user.isEmailVerified) {
+      return next(new AppError('Please verify your email before logging in.', 401));
+    }
+
+    if (user.registrationStatus === 'pending') {
+      return next(new AppError('Your registration is pending approval from HR.', 401));
+    }
+
+    if (user.registrationStatus === 'rejected') {
+      return next(new AppError('Your registration has been rejected. Contact HR for details.', 401));
+    }
+
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
       return next(new AppError('Invalid credentials', 401));
     }
 
-    // Generate tokens
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken(user);
 
-    // Update user
     user.refreshToken = refreshToken;
     user.lastLogin = new Date();
     await user.save();
 
-    // Set cookies
     res.cookie('accessToken', accessToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'strict',
-      maxAge: 24 * 60 * 60 * 1000 // 1 day
+      maxAge: 24 * 60 * 60 * 1000
     });
 
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+      maxAge: 7 * 24 * 60 * 60 * 1000
     });
 
     res.status(200).json({
@@ -224,13 +305,11 @@ const signIn = async (req, res, next) => {
   }
 };
 
-// @desc    Refresh token
-// @route   POST /api/auth/refresh
-// @access  Public
+// Refresh Token
 const refreshToken = async (req, res, next) => {
   try {
     const { refreshToken: token } = req.body;
-    
+
     if (!token) {
       return next(new AppError('Refresh token required', 401));
     }
@@ -260,9 +339,7 @@ const refreshToken = async (req, res, next) => {
   }
 };
 
-// @desc    Logout
-// @route   POST /api/auth/logout
-// @access  Private
+// Logout
 const logout = async (req, res, next) => {
   try {
     const user = await User.findById(req.user._id);
@@ -281,9 +358,7 @@ const logout = async (req, res, next) => {
   }
 };
 
-// @desc    Get current user
-// @route   GET /api/auth/me
-// @access  Private
+// Get current user
 const getMe = async (req, res, next) => {
   try {
     const user = await User.findById(req.user._id)
@@ -303,13 +378,10 @@ const getMe = async (req, res, next) => {
   }
 };
 
-// @desc    Change password
-// @route   PUT /api/auth/change-password
-// @access  Private
+// Change password
 const changePassword = async (req, res, next) => {
   try {
     const { currentPassword, newPassword } = req.body;
-
     const user = await User.findById(req.user._id).select('+password');
 
     const isMatch = await user.comparePassword(currentPassword);
@@ -321,7 +393,6 @@ const changePassword = async (req, res, next) => {
     user.passwordChangedAt = Date.now();
     await user.save();
 
-    // Generate new tokens
     const accessToken = generateAccessToken(user);
     const newRefreshToken = generateRefreshToken(user);
     user.refreshToken = newRefreshToken;
@@ -337,24 +408,31 @@ const changePassword = async (req, res, next) => {
   }
 };
 
-// @desc    Google OAuth callback
-// @route   GET /api/auth/google/callback
-// @access  Public
-const googleCallback = async (req, res, next) => {
+// Resend verification email
+const resendVerification = async (req, res, next) => {
   try {
-    if (!req.user) {
-      return res.redirect(`${process.env.CLIENT_URL}/signin?error=no_account`);
+    const { email } = req.body;
+
+    const user = await User.findOne({ email }).populate('employee');
+    if (!user) {
+      return next(new AppError('No account found with this email', 404));
     }
 
-    const accessToken = generateAccessToken(req.user);
-    const newRefreshToken = generateRefreshToken(req.user);
+    if (user.isEmailVerified) {
+      return next(new AppError('Email is already verified', 400));
+    }
 
-    req.user.refreshToken = newRefreshToken;
-    req.user.lastLogin = new Date();
-    await req.user.save();
+    const verificationToken = user.createEmailVerificationToken();
+    await user.save();
 
-    // Redirect to frontend with tokens
-    res.redirect(`${process.env.CLIENT_URL}/auth/callback?token=${accessToken}&refresh=${newRefreshToken}`);
+    const verificationUrl = `${process.env.CLIENT_URL}/verify-email/${verificationToken}`;
+    const name = user.employee ? `${user.employee.firstName} ${user.employee.lastName}` : 'User';
+    await sendVerificationEmail(email, name, verificationUrl);
+
+    res.status(200).json({
+      success: true,
+      message: 'Verification email sent successfully'
+    });
   } catch (error) {
     next(error);
   }
@@ -363,9 +441,12 @@ const googleCallback = async (req, res, next) => {
 module.exports = {
   signUp,
   signIn,
+  verifyEmail,
+  getPendingRegistrations,
+  updateRegistrationStatus,
   refreshToken,
   logout,
   getMe,
   changePassword,
-  googleCallback
+  resendVerification
 };

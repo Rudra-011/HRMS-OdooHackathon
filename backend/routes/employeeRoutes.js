@@ -2,24 +2,22 @@ const express = require('express');
 const router = express.Router();
 const {
   getAllEmployees, getEmployee, createEmployee,
-  updateEmployee, deactivateEmployee, uploadAvatar
+  updateEmployee, deactivateEmployee, uploadAvatar, uploadDocument
 } = require('../controllers/employeeController');
 const { authenticate } = require('../middleware/auth');
-const { authorize, isAdminOrHR, isSelfOrAdmin } = require('../middleware/rbac');
+const { authorize, isAdminOrHR, isSelfOrAdmin, canCreateRole } = require('../middleware/rbac');
 const { validate } = require('../middleware/validate');
 const { createEmployeeValidator, updateEmployeeValidator } = require('../validators/employeeValidator');
 const upload = require('../middleware/upload');
 
 router.use(authenticate);
 
-// Admin/HR routes
-router.get('/', getAllEmployees); // All authenticated users can see employee list
-router.post('/', isAdminOrHR, createEmployeeValidator, validate, createEmployee);
+router.get('/', getAllEmployees);
+router.post('/', isAdminOrHR, canCreateRole, createEmployeeValidator, validate, createEmployee);
 router.delete('/:id', authorize('admin'), deactivateEmployee);
-
-// Self or Admin routes
 router.get('/:id', getEmployee);
 router.put('/:id', isSelfOrAdmin, updateEmployeeValidator, validate, updateEmployee);
 router.post('/:id/avatar', isSelfOrAdmin, upload.single('avatar'), uploadAvatar);
+router.post('/:id/document', isSelfOrAdmin, upload.single('document'), uploadDocument);
 
 module.exports = router;

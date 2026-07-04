@@ -15,11 +15,17 @@ module.exports = {
     HALF_DAY: 'half_day',
     ON_LEAVE: 'on_leave'
   },
+  registrationStatus: {
+    PENDING: 'pending',
+    APPROVED: 'approved',
+    REJECTED: 'rejected'
+  },
   defaultAllocations: {
     paid_time_off: 24,
     sick_leave: 7,
     unpaid_leave: 0
   },
+  UNPAID_LEAVE_CAP: 21, // Maximum unpaid leave days allowed per year
   salaryComponents: {
     BASIC: { name: 'Basic Salary', percentage: 50 },
     HRA: { name: 'House Rent Allowance', percentageOfBasic: 60 },
@@ -31,5 +37,11 @@ module.exports = {
   deductions: {
     PF_RATE: 12,
     PROFESSIONAL_TAX: 200
+  },
+  // Role hierarchy for creation permissions
+  roleHierarchy: {
+    admin: ['hr_officer'],
+    hr_officer: ['employee'],
+    employee: []
   }
 };

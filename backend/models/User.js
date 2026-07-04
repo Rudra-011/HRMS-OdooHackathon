@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 
 const userSchema = new mongoose.Schema({
   loginId: {
@@ -26,10 +27,6 @@ const userSchema = new mongoose.Schema({
     enum: ['admin', 'hr_officer', 'employee'],
     default: 'employee'
   },
-  googleId: {
-    type: String,
-    sparse: true
-  },
   isActive: {
     type: Boolean,
     default: true
@@ -38,6 +35,15 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  registrationStatus: {
+    type: String,
+    enum: ['pending', 'approved', 'rejected'],
+    default: 'pending'
+  },
+  registrationRejectedReason: {
+    type: String,
+    default: ''
+  },
   emailVerificationToken: String,
   emailVerificationExpires: Date,
   passwordResetToken: String,
@@ -45,6 +51,10 @@ const userSchema = new mongoose.Schema({
   passwordChangedAt: Date,
   refreshToken: String,
   lastLogin: Date,
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
   employee: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Employee'
@@ -55,7 +65,6 @@ const userSchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
-// Hash password before saving
 userSchema.pre('save', async function(next) {
   if (!this.isModified('password')) return next();
   const salt = await bcrypt.genSalt(12);
@@ -63,18 +72,23 @@ userSchema.pre('save', async function(next) {
   next();
 });
 
-// Compare password method
 userSchema.methods.comparePassword = async function(candidatePassword) {
   return await bcrypt.compare(candidatePassword, this.password);
 };
 
-// Check if password changed after token was issued
 userSchema.methods.changedPasswordAfter = function(JWTTimestamp) {
   if (this.passwordChangedAt) {
     const changedTimestamp = parseInt(this.passwordChangedAt.getTime() / 1000, 10);
     return JWTTimestamp < changedTimestamp;
   }
   return false;
+};
+
+userSchema.methods.createEmailVerificationToken = function() {
+  const token = crypto.randomBytes(32).toString('hex');
+  this.emailVerificationToken = crypto.createHash('sha256').update(token).digest('hex');
+  this.emailVerificationExpires = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
+  return token;
 };
 
 module.exports = mongoose.model('User', userSchema);

@@ -4,6 +4,7 @@ const Attendance = require('../models/Attendance');
 const Employee = require('../models/Employee');
 const AppError = require('../utils/AppError');
 const { sendLeaveStatusEmail } = require('../services/emailService');
+const { UNPAID_LEAVE_CAP } = require('../config/config');
 
 // @desc    Apply for leave
 // @route   POST /api/timeoff/apply
@@ -30,9 +31,30 @@ const applyLeave = async (req, res, next) => {
     const diffTime = Math.abs(end - start);
     const totalDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
 
-    // Check allocation availability (not for unpaid leaves)
-    if (leaveType !== 'unpaid_leave') {
-      const year = new Date().getFullYear();
+    // Check allocation availability
+    const year = new Date().getFullYear();
+    if (leaveType === 'unpaid_leave') {
+      // Enforce unpaid leave cap: max UNPAID_LEAVE_CAP days per year
+      const existingUnpaidApproved = await TimeOff.aggregate([
+        {
+          $match: {
+            employee: employeeId,
+            leaveType: 'unpaid_leave',
+            status: { $in: ['pending', 'approved'] },
+            startDate: { $gte: new Date(year, 0, 1), $lte: new Date(year, 11, 31) }
+          }
+        },
+        { $group: { _id: null, totalDays: { $sum: '$totalDays' } } }
+      ]);
+      const usedUnpaidDays = existingUnpaidApproved.length > 0 ? existingUnpaidApproved[0].totalDays : 0;
+      if (usedUnpaidDays + totalDays > UNPAID_LEAVE_CAP) {
+        const remaining = Math.max(0, UNPAID_LEAVE_CAP - usedUnpaidDays);
+        return next(new AppError(
+          `Unpaid leave is capped at ${UNPAID_LEAVE_CAP} days/year. You have used ${usedUnpaidDays} days. Available: ${remaining} days.`,
+          400
+        ));
+      }
+    } else {
       const allocation = await TimeOffAllocation.findOne({
         employee: employeeId,
         leaveType,

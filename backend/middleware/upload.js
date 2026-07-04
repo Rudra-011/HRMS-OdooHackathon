@@ -1,16 +1,19 @@
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
 const AppError = require('../utils/AppError');
 
-// Storage configuration
+// Upload to temp directory first, then move in controller
+const TEMP_UPLOAD_PATH = path.join(__dirname, '../../upload/temp');
+
+// Ensure temp directory exists
+if (!fs.existsSync(TEMP_UPLOAD_PATH)) {
+  fs.mkdirSync(TEMP_UPLOAD_PATH, { recursive: true });
+}
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    let uploadPath = 'uploads/';
-    if (file.fieldname === 'avatar') uploadPath += 'avatars/';
-    else if (file.fieldname === 'logo') uploadPath += 'logos/';
-    else if (file.fieldname === 'document') uploadPath += 'documents/';
-    else if (file.fieldname === 'attachment') uploadPath += 'attachments/';
-    cb(null, uploadPath);
+    cb(null, TEMP_UPLOAD_PATH);
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -18,12 +21,11 @@ const storage = multer.diskStorage({
   }
 });
 
-// File filter
 const fileFilter = (req, file, cb) => {
   const allowedTypes = /jpeg|jpg|png|gif|pdf|doc|docx/;
   const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
   const mimetype = allowedTypes.test(file.mimetype);
-  
+
   if (mimetype && extname) {
     return cb(null, true);
   }
@@ -34,7 +36,7 @@ const upload = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: parseInt(process.env.MAX_FILE_SIZE) || 5 * 1024 * 1024 // 5MB
+    fileSize: parseInt(process.env.MAX_FILE_SIZE) || 5 * 1024 * 1024
   }
 });
 

@@ -35,6 +35,12 @@ export const WORK_STATUS = {
   resigned: 'Resigned'
 };
 
+export const REGISTRATION_STATUS = {
+  pending: 'Pending',
+  approved: 'Approved',
+  rejected: 'Rejected'
+};
+
 export const STATUS_COLORS = {
   present: 'bg-green-500',
   absent: 'bg-red-500',
@@ -44,4 +50,41 @@ export const STATUS_COLORS = {
   pending: 'bg-yellow-500',
   approved: 'bg-green-500',
   rejected: 'bg-red-500'
+};
+
+// Role-based navigation items
+export const getNavItems = (role) => {
+  const common = [
+    { label: 'Dashboard', path: '/dashboard', icon: 'home' },
+    { label: 'Attendance', path: '/attendance', icon: 'clock' },
+    { label: 'Time Off', path: '/timeoff', icon: 'calendar' }
+  ];
+
+  if (role === ROLES.EMPLOYEE) {
+    return [
+      ...common,
+      { label: 'My Profile', path: '/profile', icon: 'user' }
+    ];
+  }
+
+  if (role === ROLES.HR_OFFICER) {
+    return [
+      ...common,
+      { label: 'Employees', path: '/employees', icon: 'users' },
+      { label: 'Registrations', path: '/registrations', icon: 'user-check' },
+      { label: 'My Profile', path: '/profile', icon: 'user' }
+    ];
+  }
+
+  if (role === ROLES.ADMIN) {
+    return [
+      ...common,
+      { label: 'Employees', path: '/employees', icon: 'users' },
+      { label: 'Registrations', path: '/registrations', icon: 'user-check' },
+      { label: 'Salary', path: '/salary', icon: 'dollar-sign' },
+      { label: 'My Profile', path: '/profile', icon: 'user' }
+    ];
+  }
+
+  return common;
 };
